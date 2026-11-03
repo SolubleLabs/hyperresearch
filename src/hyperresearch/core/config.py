@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+from hyperresearch.core.agent_config import AgentSettings
 
 
 @dataclass(frozen=True)
@@ -251,6 +254,10 @@ class VaultConfig:
     # so that saving config never destroys user-defined profiles.
     profile_overlays: dict = field(default_factory=dict)
 
+    # Model-agent execution backend. Model credentials are owned by the
+    # selected runtime/provider, never by Hyperresearch config.
+    agents: AgentSettings = field(default_factory=AgentSettings)
+
     # Behavior settings sections
     fetch: FetchSettings = field(default_factory=FetchSettings)
     junk: JunkGates = field(default_factory=JunkGates)
@@ -301,6 +308,7 @@ class VaultConfig:
             web_magic=web.get("magic", cls.web_magic),
             pipeline_profile=pipeline.get("profile", cls.pipeline_profile),
             profile_overlays=data.get("profile", {}),
+            agents=_build_section(AgentSettings, data.get("agents", {})),
             fetch=_build_section(FetchSettings, data.get("fetch", {})),
             junk=_build_section(JunkGates, data.get("junk", {})),
             assets=_build_section(AssetSettings, data.get("assets", {})),
@@ -331,7 +339,7 @@ class VaultConfig:
             inner = ", ".join(f"{k} = {VaultConfig._toml_value(v)}" for k, v in value.items())
             return "{ " + inner + " }"
         if isinstance(value, str):
-            return f'"{value}"'
+            return json.dumps(value, ensure_ascii=False)
         return str(value)
 
     def _section_lines(self, header: str, section, preamble: tuple[str, ...] = ()) -> list[str]:
@@ -345,9 +353,9 @@ class VaultConfig:
     def save(self, config_path: Path) -> None:
         lines = [
             "[vault]",
-            f'name = "{self.name}"',
-            f'default_status = "{self.default_status}"',
-            f'research_dir = "{self.research_dir}"',
+            f"name = {self._toml_value(self.name)}",
+            f"default_status = {self._toml_value(self.default_status)}",
+            f"research_dir = {self._toml_value(self.research_dir)}",
             "",
             "[search]",
             f"title_weight = {self.search_title_weight}",
@@ -362,14 +370,15 @@ class VaultConfig:
             f"snippet_len = {self.search_snippet_len}",
             "",
             "[web]",
-            f'provider = "{self.web_provider}"',
-            f'profile = "{self.web_profile}"',
+            f"provider = {self._toml_value(self.web_provider)}",
+            f"profile = {self._toml_value(self.web_profile)}",
             f"magic = {'true' if self.web_magic else 'false'}",
             "",
             "[pipeline]",
-            f'profile = "{self.pipeline_profile}"',
+            f"profile = {self._toml_value(self.pipeline_profile)}",
             "",
         ]
+        lines += self._section_lines("agents", self.agents)
         lines += self._section_lines("fetch", self.fetch)
         lines += self._section_lines("junk", self.junk)
         lines += self._section_lines("assets", self.assets)

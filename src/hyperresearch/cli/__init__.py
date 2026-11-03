@@ -126,6 +126,7 @@ app.add_typer(template_app, name="template", help="Note templates.")
 app.add_typer(git_app, name="git", help="Git integration.")
 app.add_typer(tag_app, name="tag", help="Tag management.")
 
+from hyperresearch.cli.agent_cmd import app as agent_app
 from hyperresearch.cli.assets import app as assets_app
 from hyperresearch.cli.citecheck_cmd import app as citecheck_app
 from hyperresearch.cli.claims_cmd import app as claims_app
@@ -138,6 +139,7 @@ from hyperresearch.cli.run_cmd import app as run_app
 from hyperresearch.cli.scholar_cmd import app as scholar_app
 from hyperresearch.cli.sources import app as sources_app
 
+app.add_typer(agent_app, name="agent", help="Model-agent runtime selection and execution.")
 app.add_typer(profile_app, name="profile", help="Pipeline profiles (scale parameters).")
 app.add_typer(claims_app, name="claims", help="Fetcher-extracted claims (ingest + query).")
 app.add_typer(embed_app, name="embed", help="Semantic-search embeddings.")
