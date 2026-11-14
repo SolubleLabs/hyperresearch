@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import typer
+
+if TYPE_CHECKING:
+    from hyperresearch.core.vault import Vault
 
 from hyperresearch.cli._output import console, output
 from hyperresearch.models.output import error, success
@@ -13,7 +17,7 @@ from hyperresearch.models.output import error, success
 VALID_STATUSES = {"draft", "review", "evergreen", "stale", "deprecated", "archive"}
 
 
-def _discover_vault(json_output: bool):
+def _discover_vault(json_output: bool) -> Vault:
     """Discover vault with proper error handling."""
     from hyperresearch.core.vault import Vault, VaultError
     try:
@@ -28,10 +32,16 @@ def _discover_vault(json_output: bool):
 app = typer.Typer()
 
 
-def _get_matching_notes(vault, status=None, tag=None, parent=None, note_type=None) -> list[dict]:
+def _get_matching_notes(
+    vault: Vault,
+    status: str | None = None,
+    tag: str | None = None,
+    parent: str | None = None,
+    note_type: str | None = None,
+) -> list[dict[str, Any]]:
     """Find notes matching the given filters."""
     clauses = ["n.type NOT IN ('index')"]
-    params: list = []
+    params: list[object] = []
 
     if status:
         clauses.append("n.status = ?")
@@ -49,13 +59,34 @@ def _get_matching_notes(vault, status=None, tag=None, parent=None, note_type=Non
 
     where = " AND ".join(clauses)
     rows = vault.db.execute(
-        f"SELECT n.id, n.path, n.title FROM notes n WHERE {where} ORDER BY n.title",
+        f"SELECT n.id, n.path, n.title, n.origin FROM notes n WHERE {where} ORDER BY n.title",
         params,
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def _batch_update_files(vault, notes: list[dict], updates: dict) -> tuple[list[str], list[dict]]:
+def _reject_adopted_notes(notes: list[dict[str, Any]], json_output: bool) -> None:
+    """Fail the whole batch before any write if adopted notes are selected."""
+    adopted = [n for n in notes if n.get("origin") == "adopted"]
+    if not adopted:
+        return
+    ids = [n["id"] for n in adopted]
+    msg = (
+        "Batch mutation matched read-only adopted notes. Edit their canonical "
+        "project files and run hyperresearch adopt-sync instead. No notes were modified."
+    )
+    if json_output:
+        output(error(msg + " Matched: " + ", ".join(ids), "ADOPTED_READ_ONLY"), json_mode=True)
+    else:
+        console.print(f"[red]{msg}[/]")
+        for note_id in ids:
+            console.print(f"  [cyan]{note_id}[/]")
+    raise typer.Exit(1)
+
+
+def _batch_update_files(
+    vault: Vault, notes: list[dict[str, Any]], updates: dict[str, Any]
+) -> tuple[list[str], list[dict[str, str]]]:
     """Update frontmatter on multiple files. Returns (modified_ids, errors)."""
     modified = []
     errors = []
@@ -73,7 +104,9 @@ def _batch_update_files(vault, notes: list[dict], updates: dict) -> tuple[list[s
     return modified, errors
 
 
-def _update_file_frontmatter(vault_root: Path, rel_path: str, updates: dict) -> None:
+def _update_file_frontmatter(
+    vault_root: Path, rel_path: str, updates: dict[str, Any]
+) -> None:
     """Read a note file, patch its frontmatter, write it back."""
     from hyperresearch.core.frontmatter import parse_frontmatter, serialize_frontmatter
 
@@ -110,6 +143,7 @@ def batch_tag_add(
     vault = _discover_vault(json_output)
     vault.auto_sync()
     notes = _get_matching_notes(vault, status=status, tag=filter_tag, parent=parent)
+    _reject_adopted_notes(notes, json_output)
 
     if dry_run:
         data = {"action": "tag-add", "tag": tag, "would_modify": [n["id"] for n in notes]}
@@ -148,6 +182,7 @@ def batch_tag_remove(
     vault = _discover_vault(json_output)
     vault.auto_sync()
     notes = _get_matching_notes(vault, status=status, tag=filter_tag or tag, parent=parent)
+    _reject_adopted_notes(notes, json_output)
 
     if dry_run:
         data = {"action": "tag-remove", "tag": tag, "would_modify": [n["id"] for n in notes]}
@@ -196,6 +231,7 @@ def batch_set_status(
     vault = _discover_vault(json_output)
     vault.auto_sync()
     notes = _get_matching_notes(vault, status=status, tag=tag, parent=parent)
+    _reject_adopted_notes(notes, json_output)
 
     if dry_run:
         if json_output:
@@ -235,6 +271,7 @@ def batch_deprecate(
     vault = _discover_vault(json_output)
     vault.auto_sync()
     notes = _get_matching_notes(vault, status=status, tag=tag, parent=parent)
+    _reject_adopted_notes(notes, json_output)
 
     if dry_run:
         if json_output:
@@ -276,6 +313,7 @@ def batch_set_parent(
     vault = _discover_vault(json_output)
     vault.auto_sync()
     notes = _get_matching_notes(vault, status=status, tag=tag, parent=parent)
+    _reject_adopted_notes(notes, json_output)
 
     if dry_run:
         if json_output:

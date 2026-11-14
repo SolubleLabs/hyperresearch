@@ -100,14 +100,22 @@ def render_header(profile_name: str, version: str) -> str:
 
 
 def insert_after_frontmatter(content: str, line: str) -> str:
-    """Insert `line` on its own line after the closing frontmatter delimiter.
+    """Insert `line` after frontmatter, plus installed prompt augmentations.
 
-    If the content has no leading frontmatter, prepend the line.
+    Only provenance-header installs receive adoption guidance; ordinary callers
+    that use this helper to inject another runtime block remain unchanged.
     """
+    addition = line
+    if line.startswith("<!-- rendered from profile"):
+        from hyperresearch.core.adoption_prompt import adoption_guidance
+
+        guidance = adoption_guidance(content)
+        if guidance:
+            addition += "\n" + guidance.strip()
     if content.startswith("---"):
         end = content.find("\n---", 3)
         if end != -1:
             insert_at = content.find("\n", end + 1)
             if insert_at != -1:
-                return content[: insert_at + 1] + line + "\n" + content[insert_at + 1 :]
-    return line + "\n" + content
+                return content[: insert_at + 1] + addition + "\n" + content[insert_at + 1 :]
+    return addition + "\n" + content

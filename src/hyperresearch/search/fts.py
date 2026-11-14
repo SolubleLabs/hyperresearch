@@ -112,6 +112,7 @@ def search_fts(
     sql = f"""
         SELECT
             n.id, n.title, n.path, n.status, n.type, n.tier, n.content_type,
+            n.origin, n.canonical_path, n.adopt_group, n.adopt_kind,
             n.quality_score, n.doi, n.venue, n.citation_count, n.is_retracted, n.oa_version,
             n.created, n.updated, n.word_count, n.summary,
             {snippet} as snippet,
@@ -149,6 +150,10 @@ def search_fts(
             # sqlite3.Row.__contains__ is broken; row.keys() is reliable.
             "tier": row["tier"] if "tier" in row.keys() else None,  # noqa: SIM118
             "content_type": row["content_type"] if "content_type" in row.keys() else None,  # noqa: SIM118
+            "origin": row["origin"] if "origin" in row.keys() else "native",  # noqa: SIM118
+            "canonical_path": row["canonical_path"] if "canonical_path" in row.keys() else None,  # noqa: SIM118
+            "adopt_group": row["adopt_group"] if "adopt_group" in row.keys() else None,  # noqa: SIM118
+            "adopt_kind": row["adopt_kind"] if "adopt_kind" in row.keys() else None,  # noqa: SIM118
             "doi": row["doi"],
             "venue": row["venue"],
             "citation_count": row["citation_count"],

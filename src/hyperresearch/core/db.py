@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 SCHEMA_SQL = """
 PRAGMA journal_mode=WAL;
@@ -60,7 +60,14 @@ CREATE TABLE IF NOT EXISTS notes (
     oa_license       TEXT,
     -- v12. substituted = a thin page was replaced; rescued = the source was
     -- never read at all and the whole note is the open-access copy.
-    oa_recovery_kind TEXT
+    oa_recovery_kind TEXT,
+    -- v14. Native notes are managed files under research/. Adopted notes are
+    -- read-only external/project files indexed in place without being copied.
+    origin          TEXT NOT NULL DEFAULT 'native'
+                        CHECK (origin IN ('native','adopted')),
+    canonical_path  TEXT,
+    adopt_group     TEXT,
+    adopt_kind      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status);
@@ -197,6 +204,14 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE INDEX IF NOT EXISTS idx_assets_note ON assets(note_id);
 CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
 
+CREATE TABLE IF NOT EXISTS adoption_roots (
+    tag        TEXT PRIMARY KEY,
+    root_path  TEXT NOT NULL,
+    kind_mode  TEXT NOT NULL DEFAULT 'auto',
+    created_at TEXT NOT NULL,
+    synced_at  TEXT NOT NULL
+);
+
 """
 
 FTS_SQL = """
@@ -224,6 +239,11 @@ CREATE INDEX IF NOT EXISTS idx_notes_tier ON notes(tier);
 CREATE INDEX IF NOT EXISTS idx_notes_content_type ON notes(content_type);
 CREATE INDEX IF NOT EXISTS idx_notes_doi ON notes(doi);
 CREATE INDEX IF NOT EXISTS idx_notes_quality ON notes(quality_score);
+CREATE INDEX IF NOT EXISTS idx_notes_origin ON notes(origin);
+CREATE INDEX IF NOT EXISTS idx_notes_adopt_group ON notes(adopt_group);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_adopted_canonical
+    ON notes(canonical_path)
+    WHERE origin = 'adopted' AND canonical_path IS NOT NULL;
 """
 
 

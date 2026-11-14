@@ -57,6 +57,9 @@ def main(
 
 
 # Root-level commands
+from hyperresearch.cli.adopt_cmd import adopt as _adopt
+from hyperresearch.cli.adopt_cmd import adopt_status as _adopt_status
+from hyperresearch.cli.adopt_cmd import adopt_sync as _adopt_sync
 from hyperresearch.cli.archive import archive_run as _archive_run
 from hyperresearch.cli.dedup import dedup as _dedup
 from hyperresearch.cli.fetch import fetch as _fetch
@@ -95,6 +98,9 @@ app.command("show", hidden=True)(_show)
 app.command("dedup")(_dedup)
 app.command("archive-run")(_archive_run)
 app.command("vault-tag")(_vault_tag)
+app.command("adopt")(_adopt)
+app.command("adopt-status")(_adopt_status)
+app.command("adopt-sync")(_adopt_sync)
 app.command("import")(_import)
 app.command("repair")(_repair)
 app.command("watch")(_watch)

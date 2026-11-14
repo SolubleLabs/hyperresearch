@@ -157,6 +157,7 @@ def search(
             if r is None:
                 row = vault.db.execute(
                     "SELECT id, title, path, status, type, tier, content_type, "
+                    "origin, canonical_path, adopt_group, adopt_kind, "
                     "quality_score, created, updated, word_count, summary, "
                     "doi, venue, citation_count, is_retracted, oa_version "
                     "FROM notes WHERE id = ?",

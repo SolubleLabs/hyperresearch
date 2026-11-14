@@ -311,6 +311,40 @@ def _migrate_v13_nullable_retraction(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA foreign_keys={int(foreign_keys)}")
 
 
+def _migrate_v14_adopted_corpus(conn: sqlite3.Connection) -> None:
+    """Add read-only adopted-corpus metadata without rewriting existing notes."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
+    new_columns = {
+        "origin": "TEXT NOT NULL DEFAULT 'native'",
+        "canonical_path": "TEXT",
+        "adopt_group": "TEXT",
+        "adopt_kind": "TEXT",
+    }
+    for name, decl in new_columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {name} {decl}")
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS adoption_roots (
+            tag        TEXT PRIMARY KEY,
+            root_path  TEXT NOT NULL,
+            kind_mode  TEXT NOT NULL DEFAULT 'auto',
+            created_at TEXT NOT NULL,
+            synced_at  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_notes_origin ON notes(origin);
+        CREATE INDEX IF NOT EXISTS idx_notes_adopt_group ON notes(adopt_group);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_adopted_canonical
+            ON notes(canonical_path)
+            WHERE origin = 'adopted' AND canonical_path IS NOT NULL;
+    """)
+    root_columns = {row[1] for row in conn.execute("PRAGMA table_info(adoption_roots)")}
+    if "kind_mode" not in root_columns:
+        conn.execute(
+            "ALTER TABLE adoption_roots ADD COLUMN kind_mode TEXT NOT NULL DEFAULT 'auto'"
+        )
+
+
 MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection], None]] = {
     2: """
 CREATE TABLE IF NOT EXISTS tag_aliases (
@@ -360,6 +394,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
     11: _migrate_v11_oa_recovery,
     12: _migrate_v12_oa_recovery_kind,
     13: _migrate_v13_nullable_retraction,
+    14: _migrate_v14_adopted_corpus,
 }
 
 

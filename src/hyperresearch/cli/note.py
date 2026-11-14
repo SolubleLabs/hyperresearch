@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import stat
-from datetime import UTC
 from pathlib import Path
 
 import typer
@@ -195,6 +192,10 @@ def note_show(
             "created": row["created"], "updated": row["updated"],
             "word_count": row["word_count"], "source": row["source"],
             "parent": row["parent"], "summary": row["summary"],
+            "origin": row["origin"] if "origin" in row.keys() else "native",  # noqa: SIM118
+            "canonical_path": row["canonical_path"] if "canonical_path" in row.keys() else None,  # noqa: SIM118
+            "adopt_group": row["adopt_group"] if "adopt_group" in row.keys() else None,  # noqa: SIM118
+            "adopt_kind": row["adopt_kind"] if "adopt_kind" in row.keys() else None,  # noqa: SIM118
         }
         # Open-access substitution. Surfaced structurally, not just as the
         # banner in the body, so a reader checking a quotation can tell it is
@@ -233,14 +234,23 @@ def note_show(
     if len(note_ids) == 1:
         note_id = note_ids[0]
         if raw:
-            row = vault.db.execute("SELECT path FROM notes WHERE id = ?", (note_id,)).fetchone()
+            row = vault.db.execute(
+                "SELECT path, origin, canonical_path FROM notes WHERE id = ?", (note_id,)
+            ).fetchone()
             if not row:
                 if json_output:
                     output(error(f"Note not found: {note_id}", "NOT_FOUND"), json_mode=True)
                 else:
                     console.print(f"[red]Note not found:[/] {note_id}")
                 raise typer.Exit(1)
-            console.print((vault.root / row["path"]).read_text(encoding="utf-8"))
+            raw_path = (
+                Path(row["canonical_path"])
+                if row["origin"] == "adopted" and row["canonical_path"]
+                else vault.root / row["path"]
+            )
+            if not raw_path.is_absolute():
+                raw_path = vault.root / raw_path
+            console.print(raw_path.read_text(encoding="utf-8"))
             return
 
         data = _fetch_note(note_id)
@@ -392,6 +402,10 @@ def note_list(
             "summary": row["summary"],
             "created": row["created"],
             "updated": row["updated"],
+            "origin": row["origin"] if "origin" in row.keys() else "native",  # noqa: SIM118
+            "canonical_path": row["canonical_path"] if "canonical_path" in row.keys() else None,  # noqa: SIM118
+            "adopt_group": row["adopt_group"] if "adopt_group" in row.keys() else None,  # noqa: SIM118
+            "adopt_kind": row["adopt_kind"] if "adopt_kind" in row.keys() else None,  # noqa: SIM118
         })
 
     if json_output:
@@ -402,460 +416,12 @@ def note_list(
     else:
         print_note_summary(notes)
 
+# Mutating commands live in a sibling module so this command group stays small.
+from hyperresearch.cli.note_delete import note_rm
+from hyperresearch.cli.note_mutations import note_edit, note_mv, note_update
 
-@app.command("edit")
-def note_edit(
-    note_id: str = typer.Argument(..., help="Note ID to edit"),
-) -> None:
-    """Open a note in $EDITOR."""
-    import os
-    import subprocess
-
-    from hyperresearch.core.vault import Vault
-
-    vault = Vault.discover()
-    vault.auto_sync()
-
-    row = vault.db.execute("SELECT path FROM notes WHERE id = ?", (note_id,)).fetchone()
-    if not row:
-        console.print(f"[red]Not found:[/] {note_id}")
-        raise typer.Exit(1)
-
-    file_path = vault.root / row["path"]
-    editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "notepad" if os.name == "nt" else "vim"))
-    subprocess.run([editor, str(file_path)])
-
-
-@app.command("update")
-def note_update(
-    note_id: str = typer.Argument(..., help="Note ID"),
-    set_status: str | None = typer.Option(None, "--status", "-s", help="Set status"),
-    add_tag: list[str] = typer.Option([], "--add-tag", help="Add tag(s)"),
-    remove_tag: list[str] = typer.Option([], "--remove-tag", help="Remove tag(s)"),
-    set_summary: str | None = typer.Option(None, "--summary", help="Set summary"),
-    set_parent: str | None = typer.Option(None, "--parent", "-p", help="Set parent topic"),
-    set_source: str | None = typer.Option(None, "--source", help="Set source URL/path"),
-    set_tier: str | None = typer.Option(None, "--tier", help="Set epistemic tier: ground_truth|institutional|practitioner|commentary|unknown"),
-    set_content_type: str | None = typer.Option(None, "--content-type", help="Set artifact kind: paper|docs|article|blog|forum|dataset|policy|code|book|transcript|review|unknown"),
-    deprecate: bool = typer.Option(False, "--deprecate", help="Mark as deprecated"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
-) -> None:
-    """Update frontmatter fields on a single note."""
-    from datetime import datetime
-
-    from hyperresearch.core.frontmatter import parse_frontmatter, serialize_frontmatter
-    from hyperresearch.core.sync import compute_sync_plan, execute_sync
-    from hyperresearch.core.vault import Vault
-    from hyperresearch.models.note import ContentType, NoteStatus, Tier
-
-    # Validate enums up-front
-    if set_status is not None:
-        try:
-            NoteStatus(set_status)
-        except ValueError:
-            valid = ", ".join(s.value for s in NoteStatus)
-            if json_output:
-                output(error(f"Invalid --status '{set_status}'. Must be one of: {valid}", "INVALID_STATUS"), json_mode=True)
-            else:
-                console.print(f"[red]Invalid --status '{set_status}'.[/] Must be one of: {valid}")
-            raise typer.Exit(1)
-    if set_tier is not None:
-        try:
-            Tier(set_tier)
-        except ValueError:
-            valid = ", ".join(t.value for t in Tier)
-            if json_output:
-                output(error(f"Invalid --tier '{set_tier}'. Must be one of: {valid}", "INVALID_TIER"), json_mode=True)
-            else:
-                console.print(f"[red]Invalid --tier '{set_tier}'.[/] Must be one of: {valid}")
-            raise typer.Exit(1)
-    if set_content_type is not None:
-        try:
-            ContentType(set_content_type)
-        except ValueError:
-            valid = ", ".join(c.value for c in ContentType)
-            if json_output:
-                output(error(f"Invalid --content-type '{set_content_type}'. Must be one of: {valid}", "INVALID_CONTENT_TYPE"), json_mode=True)
-            else:
-                console.print(f"[red]Invalid --content-type '{set_content_type}'.[/] Must be one of: {valid}")
-            raise typer.Exit(1)
-
-    vault = Vault.discover()
-    vault.auto_sync()
-
-    row = vault.db.execute("SELECT path FROM notes WHERE id = ?", (note_id,)).fetchone()
-    if not row:
-        if json_output:
-            output(error(f"Note not found: {note_id}", "NOT_FOUND"), json_mode=True)
-        else:
-            console.print(f"[red]Not found:[/] {note_id}")
-        raise typer.Exit(1)
-
-    file_path = vault.root / row["path"]
-    content = file_path.read_text(encoding="utf-8-sig")
-    meta, body = parse_frontmatter(content)
-
-    changed = []
-    if set_status:
-        meta.status = set_status
-        changed.append(f"status={set_status}")
-    for t in add_tag:
-        if t.lower() not in meta.tags:
-            meta.tags.append(t.lower())
-            changed.append(f"+tag:{t}")
-    for t in remove_tag:
-        if t.lower() in meta.tags:
-            meta.tags.remove(t.lower())
-            changed.append(f"-tag:{t}")
-    if set_summary is not None:
-        meta.summary = set_summary
-        changed.append("summary")
-    if set_parent is not None:
-        meta.parent = set_parent
-        changed.append(f"parent={set_parent}")
-    if set_source is not None:
-        meta.source = set_source
-        changed.append("source")
-    if set_tier is not None:
-        meta.tier = set_tier
-        changed.append(f"tier={set_tier}")
-    if set_content_type is not None:
-        meta.content_type = set_content_type
-        changed.append(f"content_type={set_content_type}")
-    if deprecate:
-        meta.deprecated = True
-        meta.status = "deprecated"
-        changed.append("deprecated")
-
-    if not changed:
-        if json_output:
-            output(success({"id": note_id, "changed": []}, vault=str(vault.root)), json_mode=True)
-        else:
-            console.print("[dim]Nothing to update.[/]")
-        return
-
-    meta.updated = datetime.now(UTC)
-    new_content = serialize_frontmatter(meta) + "\n" + body
-    file_path.write_text(new_content, encoding="utf-8")
-
-    plan = compute_sync_plan(vault)
-    execute_sync(vault, plan)
-
-    if json_output:
-        output(success({"id": note_id, "changed": changed}, vault=str(vault.root)), json_mode=True)
-    else:
-        console.print(f"[green]Updated {note_id}:[/] {', '.join(changed)}")
-
-
-@app.command("mv")
-def note_mv(
-    note_id: str = typer.Argument(..., help="Note ID to move"),
-    new_path: str = typer.Argument(
-        ...,
-        help=(
-            "Destination relative to the vault root, e.g. research/notes/renamed.md. "
-            "A bare name lands in research/notes/ and a missing .md is added. The note "
-            "keeps its id (it lives in frontmatter, not the filename), so wiki-links to "
-            "it stay valid and nothing else is rewritten."
-        ),
-    ),
-    json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
-) -> None:
-    """Move a note file within the tree sync scans (research/notes or research/temp).
-
-    The id is unchanged: `mv` moves the file, it does not rename the note.
-    """
-    from pathlib import Path
-
-    from hyperresearch.core.claims import _under
-    from hyperresearch.core.sync import compute_sync_plan, execute_sync
-    from hyperresearch.core.vault import Vault
-
-    vault = Vault.discover()
-    vault.auto_sync()
-
-    row = vault.db.execute("SELECT path FROM notes WHERE id = ?", (note_id,)).fetchone()
-    if not row:
-        if json_output:
-            output(error(f"Note not found: {note_id}", "NOT_FOUND"), json_mode=True)
-        else:
-            console.print(f"[red]Not found:[/] {note_id}")
-        raise typer.Exit(1)
-
-    old_file = vault.root / row["path"]
-
-    # Resolve the destination into something sync will see. Joined verbatim, a
-    # bare name landed at the vault root with no suffix, where sync never
-    # looks, so the note silently left the index; and rename() replaced an
-    # existing note file without a word. research/index/ is synced but not a
-    # destination: IndexGenerator.build_all() deletes every .md there on the
-    # next repair, so a note moved in would be lost.
-    dest = Path(new_path)
-    if dest.name and dest.suffix.lower() != ".md":
-        dest = dest.with_name(dest.name + ".md")
-    if dest.parent == Path("."):
-        dest = vault.notes_dir.relative_to(vault.root) / dest
-    new_file = vault.root / dest
-    synced_roots = (vault.notes_dir, vault.temp_dir)
-    if not any(_under(new_file, r) and new_file.resolve() != r.resolve() for r in synced_roots):
-        allowed = ", ".join(r.relative_to(vault.root).as_posix() + "/" for r in synced_roots)
-        msg = f"Destination {dest.as_posix()} is outside the synced tree ({allowed})"
-        if json_output:
-            output(error(msg, "OUTSIDE_SYNCED_TREE"), json_mode=True)
-        else:
-            console.print(f"[red]{msg}[/]")
-        raise typer.Exit(1)
-    # samefile: on a case-insensitive filesystem a case-only rename
-    # (n-f -> N-F.md) "exists" because it is the note's own file.
-    if new_file.exists() and not new_file.samefile(old_file):
-        msg = f"Destination already exists: {dest.as_posix()}"
-        if json_output:
-            output(error(msg, "DESTINATION_EXISTS"), json_mode=True)
-        else:
-            console.print(f"[red]{msg}[/]")
-        raise typer.Exit(1)
-    # Resolve the parent only: on a case-insensitive filesystem resolve() on the
-    # file itself returns the old spelling during a case-only rename.
-    rel_new = (
-        (new_file.parent.resolve() / new_file.name).relative_to(vault.root.resolve()).as_posix()
-    )
-
-    new_file.parent.mkdir(parents=True, exist_ok=True)
-    old_file.rename(new_file)
-
-    # Re-sync
-    plan = compute_sync_plan(vault, force=True)
-    execute_sync(vault, plan)
-
-    if json_output:
-        output(success({"old_path": row["path"], "new_path": rel_new}, vault=str(vault.root)), json_mode=True)
-    else:
-        console.print(f"[green]Moved:[/] {row['path']} → {rel_new}")
-
-
-def _file_identity(path: Path) -> tuple | None:
-    """What makes `path` the same file as another spelling of it, or None
-    when no regular file is there.
-
-    The device and inode, so case, symlinks and `..` do not matter.
-    """
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    if not stat.S_ISREG(st.st_mode):
-        return None
-    return (st.st_dev, st.st_ino)
-
-
-def _located(path: Path) -> Path:
-    """`path` with its directory resolved; a symlink stays where it sits."""
-    return path.parent.resolve() / path.name
-
-
-def _is_below(path: Path, root: Path) -> bool:
-    """Whether `path`, symlinks resolved, lies strictly below the directory `root`."""
-    where, root = path.resolve(), root.resolve()
-    return where != root and where.is_relative_to(root)
-
-
-@app.command("rm")
-def note_rm(
-    note_id: str = typer.Argument(..., help="Note ID to delete"),
-    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
-    json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
-) -> None:
-    """Delete a note and its associated raw file and assets.
-
-    Previous versions only unlinked the `.md` file, leaving raw PDFs under
-    `research/raw/` and assets under `research/assets/<id>/` as orphans.
-    Every fetch-then-delete cycle leaked disk. The current implementation
-    also removes:
-      - the raw file referenced in the note's `raw_file` frontmatter field
-      - the files under `research/assets/` that the note's rows in the
-        `assets` table name, and the rest of `research/assets/<id>/` unless
-        that is a symlink, except a file another note's row names; nothing
-        outside `research/assets/` is removed
-    A file that cannot be removed does not stop the delete; it is reported
-    under `assets_not_removed`.
-    """
-    from hyperresearch.core.vault import Vault
-
-    vault = Vault.discover()
-    row = vault.db.execute(
-        "SELECT path FROM notes WHERE id = ?", (note_id,)
-    ).fetchone()
-    if not row:
-        if json_output:
-            output(error(f"Note not found: {note_id}", "NOT_FOUND"), json_mode=True)
-        else:
-            console.print(f"[red]Not found:[/] {note_id}")
-        raise typer.Exit(1)
-
-    file_path = vault.root / row["path"]
-    if not force and not json_output:
-        typer.confirm(f"Delete {row['path']}?", abort=True)
-
-    removed_raw: str | None = None
-    removed_assets: list[str] = []
-
-    # Read raw_file straight from the markdown frontmatter — the DB row
-    # may not carry that field if the schema was synced before the column
-    # existed. File parsing is authoritative.
-    if file_path.exists():
-        try:
-            from hyperresearch.core.frontmatter import parse_frontmatter
-            text = file_path.read_text(encoding="utf-8-sig")
-            meta, _ = parse_frontmatter(text)
-            if meta.raw_file:
-                # Resolve and guard against path traversal — a malicious or
-                # corrupted frontmatter could set raw_file to "../../etc/passwd".
-                # Refuse to unlink anything outside <vault>/research/.
-                research_root = (vault.root / "research").resolve()
-                raw_path = (vault.root / "research" / meta.raw_file).resolve()
-                try:
-                    raw_path.relative_to(research_root)
-                    inside_vault = True
-                except ValueError:
-                    inside_vault = False
-                if inside_vault and raw_path.exists() and raw_path.is_file():
-                    raw_path.unlink()
-                    removed_raw = str(raw_path.relative_to(vault.root).as_posix())
-        except Exception:
-            pass
-
-    # Assets. A row names its file by full path, and the file need not sit
-    # under research/assets/<note_id>/: fetch saves a note's files under the
-    # stem of its file at the time, and sync renames a row in place when the
-    # file's `id:` is rewritten, leaving the files where they are. So the
-    # files to remove are the ones this note's own rows name anywhere under
-    # research/assets/, plus whatever research/assets/<note_id>/ holds that
-    # no other note's row names (fetch can write a file it records no row
-    # for). A file another note's row names stays, in whichever directory it
-    # is. Files are compared by identity, not by spelling. Nothing is removed
-    # whose path, symlinks resolved, is not below this vault's
-    # research/assets/: a row naming a file elsewhere (a copy of the vault
-    # still holds the original's paths) is reported and its file left alone.
-    assets_root = vault.root / "research" / "assets"
-    assets_dir = assets_root / note_id
-    own_files: list[Path] = []
-    others: set[tuple] = set()
-    # Where other notes' rows point, as spelled: a symlink a row names is
-    # that note's, whatever it points at.
-    other_paths: set[Path] = set()
-    for r in vault.db.execute("SELECT note_id, filename FROM assets"):
-        if r["note_id"] == note_id:
-            own_files.append(Path(r["filename"]))
-        else:
-            other_paths.add(_located(Path(r["filename"])))
-            ident = _file_identity(Path(r["filename"]))
-            if ident is not None:
-                others.add(ident)
-    seen: set[tuple] = set()
-    seen_links: set[Path] = set()
-    assets_not_removed: list[str] = []
-    # The directories a removal may have emptied.
-    dirs: set[Path] = set()
-
-    def _label(path: Path) -> str:
-        # Vault-relative; a symlink is named where it sits, not by its target.
-        try:
-            return _located(path).relative_to(vault.root.resolve()).as_posix()
-        except ValueError:
-            return str(path)
-
-    def _remove_link(path: Path) -> None:
-        # A symlink is removed as itself, dangling or not: unlinking it never
-        # touches its target, wherever that is. Only a link that sits below
-        # research/assets/ goes, and not one another note's row names.
-        where = _located(path)
-        if where in other_paths or where in seen_links:
-            return
-        seen_links.add(where)
-        if not where.parent.is_relative_to(assets_root.resolve()):
-            assets_not_removed.append(f"{path}: outside research/assets/, left in place")
-            return
-        label = _label(path)
-        try:
-            path.unlink()
-        except OSError as exc:
-            assets_not_removed.append(f"{label}: {exc.strerror or exc}")
-            return
-        removed_assets.append(label)
-        dirs.add(path.parent)
-
-    def _remove_file(path: Path) -> None:
-        if path.is_symlink():
-            _remove_link(path)
-            return
-        ident = _file_identity(path)
-        if ident is None or ident in others or ident in seen:
-            return
-        seen.add(ident)
-        if not _is_below(path, assets_root):
-            assets_not_removed.append(f"{path}: outside research/assets/, left in place")
-            return
-        label = _label(path)
-        try:
-            path.unlink()
-        except OSError as exc:
-            assets_not_removed.append(f"{label}: {exc.strerror or exc}")
-            return
-        removed_assets.append(label)
-        dirs.add(path.parent)
-
-    for path in own_files:
-        _remove_file(path)
-    # A symlinked research/assets/<note_id> points at a directory that is not
-    # this note's to empty or remove, inside the vault or not; the link stays,
-    # as before.
-    if assets_dir.is_dir() and not assets_dir.is_symlink():
-        dirs.add(assets_dir)
-        for path in sorted(assets_dir.rglob("*")):
-            if path.is_dir() and not path.is_symlink():
-                dirs.add(path)
-            else:
-                _remove_file(path)
-    # An empty one goes, deepest first: never a symlink, and only below
-    # research/assets/.
-    for d in sorted({_located(d) for d in dirs}, key=lambda d: len(d.parts), reverse=True):
-        if d.is_symlink() or not _is_below(d, assets_root):
-            continue
-        try:
-            if not d.is_dir() or any(d.iterdir()):
-                continue
-            d.rmdir()
-        except OSError as exc:
-            assets_not_removed.append(f"{_label(d)}/: {exc.strerror or exc}")
-
-    # Finally, unlink the .md file
-    if file_path.exists():
-        file_path.unlink()
-
-    # Re-sync to update DB
-    from hyperresearch.core.sync import compute_sync_plan, execute_sync
-
-    plan = compute_sync_plan(vault)
-    execute_sync(vault, plan)
-
-    payload: dict = {"deleted": note_id}
-    if removed_raw:
-        payload["removed_raw"] = removed_raw
-    if removed_assets:
-        payload["removed_assets"] = removed_assets
-    if assets_not_removed:
-        payload["assets_not_removed"] = assets_not_removed
-
-    if json_output:
-        output(success(payload, vault=str(vault.root)), json_mode=True)
-    else:
-        msg = f"[red]Deleted:[/] {note_id}"
-        if removed_raw:
-            msg += f"\n  raw: {removed_raw}"
-        if removed_assets:
-            msg += f"\n  assets: {len(removed_assets)} file(s)"
-        if assets_not_removed:
-            msg += "\n  assets not removed: " + "; ".join(assets_not_removed)
-        console.print(msg)
-
+app.command("edit")(note_edit)
+app.command("update")(note_update)
+app.command("mv")(note_mv)
+app.command("rm")(note_rm)
 
